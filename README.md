@@ -24,6 +24,12 @@ meshapp/
 - Public identity and fingerprint via FFI
 - User ID computation (SHA256 of Ed25519 public key)
 
+**Phase 2: Friends** ✅
+- Friend management (add, remove, list)
+- QR code export/import for friend public keys
+- Local storage of friends
+- Manual friend addition via public key
+
 ## Building
 
 ### Prerequisites
@@ -81,13 +87,31 @@ Identity keys are stored securely in:
 - macOS: `~/Library/Application Support/meshapp/identity.json`
 - Windows: `%LOCALAPPDATA%\meshapp\identity.json`
 
-## Phase 1 Status
+## Phase 2 Status
 
-✅ Identity key generation (Ed25519 + X25519)
-✅ Secure storage with file permissions
-✅ Identity persistence across app restarts
-✅ FFI functions for public identity access
-✅ Flutter UI displaying identity information
+✅ Friend data structure and storage
+✅ Friend management (add, remove, list)
+✅ QR code generation for identity export
+✅ QR code scanning for friend import
+✅ Manual friend addition via public key
+✅ Flutter UI with tabbed interface (Identity & Friends)
+✅ Secure friend storage (JSON with file permissions)
+
+### Friend Management
+
+Friends are stored locally with:
+- **user_id**: SHA256 of Ed25519 public key
+- **ed25519_public**: Public key for verification
+- **nickname**: Local-only display name
+
+Friends can be added via:
+- **QR Code** (recommended): Scan friend's QR code
+- **Manual import**: Enter Ed25519 public key directly
+
+Storage location:
+- Linux: `~/.local/share/meshapp/friends.json` (permissions: 600)
+- macOS: `~/Library/Application Support/meshapp/friends.json`
+- Windows: `%LOCALAPPDATA%\meshapp\friends.json`
 
 ## License
 

@@ -18,6 +18,12 @@ meshapp/
 - Rust ↔ Flutter FFI setup
 - Test function
 
+**Phase 1: Identity** ✅
+- Identity key generation (Ed25519 + X25519)
+- Secure storage of identity keys
+- Public identity and fingerprint via FFI
+- User ID computation (SHA256 of Ed25519 public key)
+
 ## Building
 
 ### Prerequisites
@@ -58,17 +64,30 @@ The Flutter app includes a test button that calls the `test_ffi()` function from
 ## Project Structure Details
 
 - `rust/` - Core Rust library with FFI exports
-- `rust/src/lib.rs` - Main library with `test_ffi()` function
-- `flutter/lib/main.dart` - Flutter UI with FFI bindings
-- `flutter/lib/main.dart` - Contains `RustCore` class for FFI calls
+- `rust/src/lib.rs` - Main library with FFI functions
+- `rust/src/identity.rs` - Identity management (key generation, storage)
+- `flutter/lib/main.dart` - Flutter UI with FFI bindings and identity display
 
-## Phase 0 Status
+## Identity System
 
-✅ Monorepo structure created
-✅ Rust library with FFI exports
-✅ Flutter app with FFI bindings
-✅ Test function to verify connectivity
-✅ Build scripts and documentation
+Each device generates a permanent identity on first launch:
+- **Ed25519 keypair** for identity signing
+- **X25519 keypair** for key exchange
+- **User ID** = SHA256(Ed25519 public key)
+- **Fingerprint** = First 16 characters of User ID (for display)
+
+Identity keys are stored securely in:
+- Linux: `~/.local/share/meshapp/identity.json` (permissions: 600)
+- macOS: `~/Library/Application Support/meshapp/identity.json`
+- Windows: `%LOCALAPPDATA%\meshapp\identity.json`
+
+## Phase 1 Status
+
+✅ Identity key generation (Ed25519 + X25519)
+✅ Secure storage with file permissions
+✅ Identity persistence across app restarts
+✅ FFI functions for public identity access
+✅ Flutter UI displaying identity information
 
 ## License
 

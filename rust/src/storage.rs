@@ -21,6 +21,12 @@ pub struct MessageRow {
     pub ttl: u8,
 }
 
+#[derive(Debug)]
+pub struct ChannelRow {
+    pub channel_id: [u8; 32],
+    pub channel_type: String,
+}
+
 impl Storage {
     /// Initialize storage and create tables if they don't exist.
     pub fn init(db_path: &PathBuf) -> Result<Self, String> {
@@ -123,6 +129,50 @@ impl Storage {
             results.push(r.map_err(|e| format!("Row error: {}", e))?);
         }
         Ok(results)
+    }
+
+    /// Upsert a channel (idempotent on channel_id).
+    pub fn upsert_channel(&self, channel_id: [u8; 32], channel_type: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO channels (channel_id, type)
+                 VALUES (?1, ?2)",
+                params![&channel_id, &channel_type],
+            )
+            .map_err(|e| format!("Failed to upsert channel: {}", e))?;
+        Ok(())
+    }
+
+    /// List channels by type.
+    pub fn list_channels_by_type(&self, channel_type: &str) -> Result<Vec<ChannelRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT channel_id, type
+                 FROM channels
+                 WHERE type = ?1",
+            )
+            .map_err(|e| format!("Failed to prepare channel query: {}", e))?;
+
+        let rows = stmt
+            .query_map(params![channel_type], |row| {
+                Ok(ChannelRow {
+                    channel_id: {
+                        let blob: Vec<u8> = row.get(0)?;
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&blob);
+                        arr
+                    },
+                    channel_type: row.get(1)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query channels: {}", e))?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| format!("Channel row error: {}", e))?);
+        }
+        Ok(out)
     }
 }
 

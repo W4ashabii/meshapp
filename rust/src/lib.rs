@@ -13,11 +13,13 @@ mod friends;
 mod dm_crypto;
 mod storage;
 mod transport;
+mod geo;
 
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Global identity instance (lazy-loaded, thread-safe)
 static IDENTITY: Lazy<Mutex<Option<identity::Identity>>> = Lazy::new(|| Mutex::new(None));
@@ -27,6 +29,11 @@ static FRIENDS: Lazy<Mutex<Option<friends::FriendManager>>> = Lazy::new(|| Mutex
 
 // Global storage (lazy-loaded, thread-safe)
 static STORAGE: Lazy<Mutex<Option<storage::Storage>>> = Lazy::new(|| Mutex::new(None));
+
+// Global router and loopback transport (Phase 6 store-and-forward)
+static ROUTER: Lazy<Mutex<Option<transport::Router>>> = Lazy::new(|| Mutex::new(None));
+static LOOPBACK: Lazy<Mutex<Option<std::sync::Arc<transport::LoopbackTransport>>>> =
+    Lazy::new(|| Mutex::new(None));
 
 /// Initialize identity (loads from storage or generates new one)
 /// Returns 0 on success, -1 on error
@@ -523,6 +530,14 @@ fn parse_hex_vec(hex_ptr: *const c_char) -> Option<Vec<u8>> {
     hex::decode(hex_str).ok()
 }
 
+/// Helper: current timestamp seconds since UNIX_EPOCH
+fn now_ts() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 /// Test encrypt/decrypt roundtrip (Phase 3 testing)
 /// 
 /// This function demonstrates the encryption/decryption APIs work correctly.
@@ -671,6 +686,101 @@ pub extern "C" fn test_dm_encrypt_decrypt(
         .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
+// ========== Geohash Channels (Phase 7) ==========
+
+/// Derive a geohash channel id from geohash + topic.
+/// Returns channel_id hex on success, null on error.
+#[no_mangle]
+pub extern "C" fn derive_geo_channel_id(
+    geohash_ptr: *const c_char,
+    topic_ptr: *const c_char,
+) -> *mut c_char {
+    let geohash = unsafe {
+        if geohash_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        match std::ffi::CStr::from_ptr(geohash_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let topic = unsafe {
+        if topic_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        match std::ffi::CStr::from_ptr(topic_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let id = geo::derive_geo_channel_id(geohash, topic);
+    let hex_str = geo::channel_id_to_hex(&id);
+    CString::new(hex_str)
+        .ok()
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Register a geohash channel in local storage.
+/// channel_id_hex must be 32 bytes hex; returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn register_geo_channel(channel_id_hex: *const c_char) -> i32 {
+    let channel_id = match parse_hex_32(channel_id_hex) {
+        Some(v) => v,
+        None => return -1,
+    };
+
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(ref storage) = *storage_guard {
+        match storage.upsert_channel(channel_id, "geo") {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("register_geo_channel failed: {}", e);
+                -1
+            }
+        }
+    } else {
+        -1
+    }
+}
+
+/// List registered geohash channels.
+/// Returns JSON array [{ channel_id, type }] or null on error.
+#[no_mangle]
+pub extern "C" fn get_geo_channels() -> *mut c_char {
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(ref storage) = *storage_guard {
+        match storage.list_channels_by_type("geo") {
+            Ok(channels) => {
+                let json: Vec<serde_json::Value> = channels
+                    .into_iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "channel_id": hex::encode(c.channel_id),
+                            "type": c.channel_type,
+                        })
+                    })
+                    .collect();
+                match serde_json::to_string(&json) {
+                    Ok(s) => CString::new(s)
+                        .ok()
+                        .map(|s| s.into_raw())
+                        .unwrap_or(std::ptr::null_mut()),
+                    Err(_) => std::ptr::null_mut(),
+                }
+            }
+            Err(e) => {
+                eprintln!("get_geo_channels failed: {}", e);
+                std::ptr::null_mut()
+            }
+        }
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
 /// Test function to verify FFI connectivity
 /// 
 /// Returns a test string to confirm Rust ↔ Flutter communication works
@@ -690,6 +800,173 @@ pub extern "C" fn free_string(ptr: *mut c_char) {
         unsafe {
             let _ = CString::from_raw(ptr);
         }
+    }
+}
+
+// ========== Transport / Router (Phase 6) ==========
+
+/// Initialize router with loopback transport (for testing / local dev).
+/// Requires storage to be initialized for on_new persistence.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn init_router_with_loopback() -> i32 {
+    let loopback = std::sync::Arc::new(transport::LoopbackTransport::new());
+    let router = transport::Router::new(vec![loopback.clone()]);
+
+    {
+        let mut lb_guard = LOOPBACK.lock().unwrap();
+        *lb_guard = Some(loopback);
+    }
+    {
+        let mut r_guard = ROUTER.lock().unwrap();
+        *r_guard = Some(router);
+    }
+    0
+}
+
+/// Send a packet (builds packet_id if not provided) via router.
+/// packet_id_hex: optional (null pointer -> auto-generate)
+/// channel_id_hex, payload_hex: required
+/// ttl: hop limit
+/// Returns packet_id_hex on success, null on error.
+#[no_mangle]
+pub extern "C" fn send_packet(
+    packet_id_hex: *const c_char,
+    channel_id_hex: *const c_char,
+    payload_hex: *const c_char,
+    ttl: u8,
+) -> *mut c_char {
+    let channel_id = match parse_hex_32(channel_id_hex) {
+        Some(v) => v,
+        None => return std::ptr::null_mut(),
+    };
+    let payload = match parse_hex_vec(payload_hex) {
+        Some(v) => v,
+        None => return std::ptr::null_mut(),
+    };
+
+    let packet_id = if packet_id_hex.is_null() {
+        transport::Router::generate_packet_id()
+    } else {
+        match parse_hex_32(packet_id_hex) {
+            Some(v) => v,
+            None => return std::ptr::null_mut(),
+        }
+    };
+
+    let packet = transport::Packet {
+        packet_id,
+        channel_id,
+        ttl,
+        payload,
+    };
+
+    // Route and store on new.
+    {
+        let r_guard = ROUTER.lock().unwrap();
+        if let Some(ref router) = *r_guard {
+            let storage_guard = STORAGE.lock().unwrap();
+            let storage_opt = storage_guard.as_ref().map(|s| s as *const _);
+            router.route(packet.clone(), |p| {
+                // On new: persist message (ciphertext) for offline-first
+                if let Some(storage_ptr) = storage_opt {
+                    // Safety: storage_ptr derived from &storage; read-only here.
+                    let storage: &storage::Storage = unsafe { &*storage_ptr };
+                    let _ = storage.store_message(
+                        p.packet_id,
+                        p.channel_id,
+                        p.payload.clone(),
+                        now_ts(),
+                        p.ttl,
+                    );
+                }
+            });
+        } else {
+            return std::ptr::null_mut();
+        }
+    }
+
+    CString::new(hex::encode(packet_id))
+        .ok()
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Inject a received packet (e.g., from BLE) into the router.
+/// packet_id_hex, channel_id_hex, payload_hex required; ttl as received.
+#[no_mangle]
+pub extern "C" fn ingest_packet(
+    packet_id_hex: *const c_char,
+    channel_id_hex: *const c_char,
+    payload_hex: *const c_char,
+    ttl: u8,
+) -> i32 {
+    let packet_id = match parse_hex_32(packet_id_hex) {
+        Some(v) => v,
+        None => return -1,
+    };
+    let channel_id = match parse_hex_32(channel_id_hex) {
+        Some(v) => v,
+        None => return -1,
+    };
+    let payload = match parse_hex_vec(payload_hex) {
+        Some(v) => v,
+        None => return -1,
+    };
+
+    let packet = transport::Packet {
+        packet_id,
+        channel_id,
+        ttl,
+        payload,
+    };
+
+    let r_guard = ROUTER.lock().unwrap();
+    if let Some(ref router) = *r_guard {
+        let storage_guard = STORAGE.lock().unwrap();
+        let storage_opt = storage_guard.as_ref().map(|s| s as *const _);
+        router.route(packet, |p| {
+            if let Some(storage_ptr) = storage_opt {
+                let storage: &storage::Storage = unsafe { &*storage_ptr };
+                let _ = storage.store_message(
+                    p.packet_id,
+                    p.channel_id,
+                    p.payload.clone(),
+                    now_ts(),
+                    p.ttl,
+                );
+            }
+        });
+        0
+    } else {
+        -1
+    }
+}
+
+/// Drain loopback transport packets (testing helper).
+/// Returns JSON array of packets {packet_id, channel_id, ttl, payload} hex-encoded.
+#[no_mangle]
+pub extern "C" fn drain_loopback_packets() -> *mut c_char {
+    let lb_guard = LOOPBACK.lock().unwrap();
+    if let Some(ref lb) = *lb_guard {
+        let packets = lb.drain();
+        let json: Vec<serde_json::Value> = packets
+            .into_iter()
+            .map(|p| {
+                serde_json::json!({
+                    "packet_id": hex::encode(p.packet_id),
+                    "channel_id": hex::encode(p.channel_id),
+                    "ttl": p.ttl,
+                    "payload": hex::encode(p.payload),
+                })
+            })
+            .collect();
+        match serde_json::to_string(&json) {
+            Ok(s) => CString::new(s).ok().map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    } else {
+        std::ptr::null_mut()
     }
 }
 

@@ -42,6 +42,17 @@ meshapp/
 - Channels table scaffolded
 - FFI for storing and fetching messages
 
+**Phase 5:** ✅
+- Transport abstraction with router
+- TTL + deduplication on incoming packets
+- Store-and-forward: on-new packets persisted to SQLite
+- Loopback transport for testing; BLE hooks to follow
+
+**Phase 7: Geohash Channels** ✅
+- Geohash-based channel IDs: `SHA256(geohash + topic)`
+- Channel registry table (`channels`) with type = `geo`
+- FFI for deriving, registering, and listing geohash channels
+
 ## Building
 
 ### Prerequisites
@@ -135,7 +146,7 @@ Storage location:
 ✅ Test function for encrypt/decrypt roundtrip
 ✅ FFI functions for channel ID derivation
 
-### DM Cryptography
+### phase 4 DM Cryptography
 
 Direct messages use:
 - **Channel ID**: `SHA256(min(pubA, pubB) || max(pubA, pubB))` - Same for both peers, cannot be reversed

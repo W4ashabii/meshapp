@@ -12,6 +12,7 @@ mod identity;
 mod friends;
 mod dm_crypto;
 mod storage;
+mod transport;
 
 use std::ffi::CString;
 use std::os::raw::c_char;

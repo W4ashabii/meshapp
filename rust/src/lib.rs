@@ -11,6 +11,7 @@
 mod identity;
 mod friends;
 mod dm_crypto;
+mod storage;
 
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -22,6 +23,9 @@ static IDENTITY: Lazy<Mutex<Option<identity::Identity>>> = Lazy::new(|| Mutex::n
 
 // Global friends manager (lazy-loaded, thread-safe)
 static FRIENDS: Lazy<Mutex<Option<friends::FriendManager>>> = Lazy::new(|| Mutex::new(None));
+
+// Global storage (lazy-loaded, thread-safe)
+static STORAGE: Lazy<Mutex<Option<storage::Storage>>> = Lazy::new(|| Mutex::new(None));
 
 /// Initialize identity (loads from storage or generates new one)
 /// Returns 0 on success, -1 on error
@@ -311,6 +315,116 @@ pub extern "C" fn import_friend_from_json(json: *const c_char, nickname: *const 
     }
 }
 
+// ========== Storage (Phase 4) ==========
+
+/// Initialize SQLite storage
+/// Returns 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn init_storage() -> i32 {
+    let db_path = match storage::db_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to get db path: {}", e);
+            return -1;
+        }
+    };
+
+    match storage::Storage::init(&db_path) {
+        Ok(s) => {
+            *STORAGE.lock().unwrap() = Some(s);
+            0
+        }
+        Err(e) => {
+            eprintln!("Failed to initialize storage: {}", e);
+            -1
+        }
+    }
+}
+
+/// Store a message
+/// Returns 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn store_message(
+    message_id_hex: *const c_char,
+    channel_id_hex: *const c_char,
+    ciphertext_hex: *const c_char,
+    timestamp: i64,
+    ttl: u8,
+) -> i32 {
+    let message_id = match parse_hex_32(message_id_hex) {
+        Some(v) => v,
+        None => return -1,
+    };
+    let channel_id = match parse_hex_32(channel_id_hex) {
+        Some(v) => v,
+        None => return -1,
+    };
+    let ciphertext = match parse_hex_vec(ciphertext_hex) {
+        Some(v) => v,
+        None => return -1,
+    };
+
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(ref storage) = *storage_guard {
+        match storage.store_message(message_id, channel_id, ciphertext, timestamp, ttl) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("store_message failed: {}", e);
+                -1
+            }
+        }
+    } else {
+        -1
+    }
+}
+
+/// Get messages for a channel as JSON
+/// Returns JSON string or null on error
+#[no_mangle]
+pub extern "C" fn get_messages(
+    channel_id_hex: *const c_char,
+    limit: u32,
+    offset: u32,
+) -> *mut c_char {
+    let channel_id = match parse_hex_32(channel_id_hex) {
+        Some(v) => v,
+        None => return std::ptr::null_mut(),
+    };
+
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(ref storage) = *storage_guard {
+        match storage.fetch_messages(channel_id, limit, offset) {
+            Ok(rows) => {
+                let json_rows: Vec<serde_json::Value> = rows
+                    .into_iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "message_id": hex::encode(r.message_id),
+                            "channel_id": hex::encode(r.channel_id),
+                            "ciphertext": hex::encode(r.ciphertext),
+                            "timestamp": r.timestamp,
+                            "ttl": r.ttl,
+                        })
+                    })
+                    .collect();
+                match serde_json::to_string(&json_rows) {
+                    Ok(s) => CString::new(s)
+                        .ok()
+                        .map(|s| s.into_raw())
+                        .unwrap_or(std::ptr::null_mut()),
+                    Err(_) => std::ptr::null_mut(),
+                }
+            }
+            Err(e) => {
+                eprintln!("get_messages failed: {}", e);
+                std::ptr::null_mut()
+            }
+        }
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
 // ========== DM Cryptography ==========
 
 /// Derive DM channel ID from two user IDs (Ed25519 public keys as hex)
@@ -390,6 +504,22 @@ fn parse_hex_32(hex_ptr: *const c_char) -> Option<[u8; 32]> {
     let mut result = [0u8; 32];
     result.copy_from_slice(&bytes);
     Some(result)
+}
+
+/// Helper to parse hex string to Vec<u8>
+fn parse_hex_vec(hex_ptr: *const c_char) -> Option<Vec<u8>> {
+    if hex_ptr.is_null() {
+        return None;
+    }
+
+    let hex_str = unsafe {
+        match std::ffi::CStr::from_ptr(hex_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => return None,
+        }
+    };
+
+    hex::decode(hex_str).ok()
 }
 
 /// Test encrypt/decrypt roundtrip (Phase 3 testing)

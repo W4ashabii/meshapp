@@ -36,6 +36,12 @@ meshapp/
 - Encrypt/decrypt APIs for direct messages
 - Session-based encryption (handshake simulation for testing)
 
+**Phase 4: Storage** ✅
+- SQLite offline-first message storage
+- Tables: messages (id, channel_id, ciphertext, timestamp, ttl)
+- Channels table scaffolded
+- FFI for storing and fetching messages
+
 ## Building
 
 ### Prerequisites

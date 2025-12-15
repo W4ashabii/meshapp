@@ -10,6 +10,7 @@
 
 mod identity;
 mod friends;
+mod dm_crypto;
 
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -308,6 +309,235 @@ pub extern "C" fn import_friend_from_json(json: *const c_char, nickname: *const 
         }
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+// ========== DM Cryptography ==========
+
+/// Derive DM channel ID from two user IDs (Ed25519 public keys as hex)
+/// Returns channel_id (hex) on success, null on error
+#[no_mangle]
+pub extern "C" fn derive_dm_channel_id(user_id_a_hex: *const c_char, user_id_b_hex: *const c_char) -> *mut c_char {
+    let user_id_a_str = unsafe {
+        if user_id_a_hex.is_null() {
+            return std::ptr::null_mut();
+        }
+        match std::ffi::CStr::from_ptr(user_id_a_hex).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let user_id_b_str = unsafe {
+        if user_id_b_hex.is_null() {
+            return std::ptr::null_mut();
+        }
+        match std::ffi::CStr::from_ptr(user_id_b_hex).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let user_id_a_bytes = match hex::decode(user_id_a_str) {
+        Ok(bytes) => bytes,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let user_id_b_bytes = match hex::decode(user_id_b_str) {
+        Ok(bytes) => bytes,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    if user_id_a_bytes.len() != 32 || user_id_b_bytes.len() != 32 {
+        return std::ptr::null_mut();
+    }
+
+    let mut pub_a = [0u8; 32];
+    let mut pub_b = [0u8; 32];
+    pub_a.copy_from_slice(&user_id_a_bytes);
+    pub_b.copy_from_slice(&user_id_b_bytes);
+
+    let channel_id = dm_crypto::derive_dm_channel_id(&pub_a, &pub_b);
+    let channel_id_hex = dm_crypto::dm_channel_id_to_hex(&channel_id);
+
+    CString::new(channel_id_hex)
+        .ok()
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Helper to parse hex string to [u8; 32]
+fn parse_hex_32(hex_ptr: *const c_char) -> Option<[u8; 32]> {
+    if hex_ptr.is_null() {
+        return None;
+    }
+    
+    let hex_str = unsafe {
+        match std::ffi::CStr::from_ptr(hex_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => return None,
+        }
+    };
+
+    let bytes = match hex::decode(hex_str) {
+        Ok(b) => b,
+        Err(_) => return None,
+    };
+    
+    if bytes.len() != 32 {
+        return None;
+    }
+
+    let mut result = [0u8; 32];
+    result.copy_from_slice(&bytes);
+    Some(result)
+}
+
+/// Test encrypt/decrypt roundtrip (Phase 3 testing)
+/// 
+/// This function demonstrates the encryption/decryption APIs work correctly.
+/// It requires both peers' keys to simulate the handshake.
+/// 
+/// Returns: "OK" on success, error message on failure
+#[no_mangle]
+pub extern "C" fn test_dm_encrypt_decrypt(
+    local_ed25519_hex: *const c_char,
+    local_x25519_secret_hex: *const c_char,
+    local_x25519_public_hex: *const c_char,
+    remote_ed25519_hex: *const c_char,
+    remote_x25519_secret_hex: *const c_char,
+    remote_x25519_public_hex: *const c_char,
+    test_message_hex: *const c_char,
+) -> *mut c_char {
+    // Parse all inputs
+    let local_ed25519 = match parse_hex_32(local_ed25519_hex) {
+        Some(k) => k,
+        None => {
+            return CString::new("Error: Invalid local_ed25519_hex").ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+    
+    let local_x25519_secret = match parse_hex_32(local_x25519_secret_hex) {
+        Some(k) => k,
+        None => {
+            return CString::new("Error: Invalid local_x25519_secret_hex").ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+    
+    let local_x25519_public = match parse_hex_32(local_x25519_public_hex) {
+        Some(k) => k,
+        None => {
+            return CString::new("Error: Invalid local_x25519_public_hex").ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+    
+    let remote_ed25519 = match parse_hex_32(remote_ed25519_hex) {
+        Some(k) => k,
+        None => {
+            return CString::new("Error: Invalid remote_ed25519_hex").ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+    
+    let remote_x25519_secret = match parse_hex_32(remote_x25519_secret_hex) {
+        Some(k) => k,
+        None => {
+            return CString::new("Error: Invalid remote_x25519_secret_hex").ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+    
+    let remote_x25519_public = match parse_hex_32(remote_x25519_public_hex) {
+        Some(k) => k,
+        None => {
+            return CString::new("Error: Invalid remote_x25519_public_hex").ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+    
+    let test_message_str = unsafe {
+        if test_message_hex.is_null() {
+            return CString::new("Error: test_message_hex is null").ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+        match std::ffi::CStr::from_ptr(test_message_hex).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                return CString::new("Error: Invalid test_message_hex").ok()
+                    .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+            }
+        }
+    };
+    
+    let test_message = match hex::decode(test_message_str) {
+        Ok(b) => b,
+        Err(_) => {
+            return CString::new("Error: Failed to decode test_message_hex").ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    // Create test sessions (both sides)
+    let mut init_session = match dm_crypto::create_test_session(
+        &local_ed25519,
+        &local_x25519_secret,
+        &local_x25519_public,
+        &remote_ed25519,
+        &remote_x25519_secret,
+        &remote_x25519_public,
+        true, // is_initiator
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return CString::new(format!("Error creating initiator session: {}", e)).ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    let mut resp_session = match dm_crypto::create_test_session(
+        &local_ed25519,
+        &local_x25519_secret,
+        &local_x25519_public,
+        &remote_ed25519,
+        &remote_x25519_secret,
+        &remote_x25519_public,
+        false, // is_initiator
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return CString::new(format!("Error creating responder session: {}", e)).ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    // Encrypt on initiator side
+    let ciphertext = match init_session.encrypt(&test_message) {
+        Ok(c) => c,
+        Err(e) => {
+            return CString::new(format!("Error encrypting: {}", e)).ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    // Decrypt on responder side
+    let decrypted = match resp_session.decrypt(&ciphertext) {
+        Ok(d) => d,
+        Err(e) => {
+            return CString::new(format!("Error decrypting: {}", e)).ok()
+                .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    // Verify roundtrip
+    if decrypted != test_message {
+        return CString::new("Error: Decrypted message doesn't match original").ok()
+            .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+    }
+
+    CString::new("OK: Encrypt/decrypt roundtrip successful").ok()
+        .map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
 /// Test function to verify FFI connectivity

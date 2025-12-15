@@ -30,6 +30,12 @@ meshapp/
 - Local storage of friends
 - Manual friend addition via public key
 
+**Phase 3: DM Cryptography** ✅
+- DM channel ID derivation (SHA256(min(pubA, pubB) || max(pubA, pubB)))
+- Noise Protocol IK pattern implementation
+- Encrypt/decrypt APIs for direct messages
+- Session-based encryption (handshake simulation for testing)
+
 ## Building
 
 ### Prerequisites
@@ -72,7 +78,9 @@ The Flutter app includes a test button that calls the `test_ffi()` function from
 - `rust/` - Core Rust library with FFI exports
 - `rust/src/lib.rs` - Main library with FFI functions
 - `rust/src/identity.rs` - Identity management (key generation, storage)
-- `flutter/lib/main.dart` - Flutter UI with FFI bindings and identity display
+- `rust/src/friends.rs` - Friend management and storage
+- `rust/src/dm_crypto.rs` - DM cryptography with Noise Protocol
+- `flutter/lib/main.dart` - Flutter UI with FFI bindings
 
 ## Identity System
 
@@ -112,6 +120,23 @@ Storage location:
 - Linux: `~/.local/share/meshapp/friends.json` (permissions: 600)
 - macOS: `~/Library/Application Support/meshapp/friends.json`
 - Windows: `%LOCALAPPDATA%\meshapp\friends.json`
+
+## Phase 3 Status
+
+✅ DM channel ID derivation (deterministic, private)
+✅ Noise Protocol IK pattern (Noise_IK_25519_ChaChaPoly_SHA256)
+✅ Session-based encryption/decryption APIs
+✅ Test function for encrypt/decrypt roundtrip
+✅ FFI functions for channel ID derivation
+
+### DM Cryptography
+
+Direct messages use:
+- **Channel ID**: `SHA256(min(pubA, pubB) || max(pubA, pubB))` - Same for both peers, cannot be reversed
+- **Noise Pattern**: `Noise_IK_25519_ChaChaPoly_SHA256` - Authenticated, forward secrecy
+- **Session Management**: Transport state maintained after handshake completion
+
+**Note**: In Phase 3, handshake is simulated for testing. In Phase 5+, handshake will occur over the network transport layer.
 
 ## License
 

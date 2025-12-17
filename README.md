@@ -42,7 +42,7 @@ meshapp/
 - Channels table scaffolded
 - FFI for storing and fetching messages
 
-**Phase 5:** ✅
+**Phase 5: Transport** ✅
 - Transport abstraction with router
 - TTL + deduplication on incoming packets
 - Store-and-forward: on-new packets persisted to SQLite
@@ -52,6 +52,11 @@ meshapp/
 - Geohash-based channel IDs: `SHA256(geohash + topic)`
 - Channel registry table (`channels`) with type = `geo`
 - FFI for deriving, registering, and listing geohash channels
+
+**Phase 8: Mentions** ✅
+- `@nickname` parsing client-side only (no protocol changes)
+- Rust mention extractor matched against local friends list
+- FFI to return mentions as JSON for local notifications/UI
 
 ## Building
 

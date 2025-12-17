@@ -14,6 +14,7 @@ mod dm_crypto;
 mod storage;
 mod transport;
 mod geo;
+mod mentions;
 
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -778,6 +779,54 @@ pub extern "C" fn get_geo_channels() -> *mut c_char {
         }
     } else {
         std::ptr::null_mut()
+    }
+}
+
+// ========== Mentions (Phase 8) ==========
+
+/// Extract mentions from message text.
+/// 
+/// friends_json: JSON array of friends, e.g.:
+///   [{ "user_id": "...", "nickname": "Alice" }, ...]
+/// Returns JSON array of mentions:
+///   [{ "user_id": "...", "nickname": "Alice" }, ...]
+#[no_mangle]
+pub extern "C" fn extract_mentions_from_text(
+    text_ptr: *const c_char,
+    friends_json_ptr: *const c_char,
+) -> *mut c_char {
+    let text = unsafe {
+        if text_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        match std::ffi::CStr::from_ptr(text_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let friends_json = unsafe {
+        if friends_json_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        match std::ffi::CStr::from_ptr(friends_json_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let friends: Vec<mentions::FriendInfo> = match serde_json::from_str(friends_json) {
+        Ok(v) => v,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let mentions = mentions::extract_mentions(text, &friends);
+    match serde_json::to_string(&mentions) {
+        Ok(s) => CString::new(s)
+            .ok()
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 

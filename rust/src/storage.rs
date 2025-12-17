@@ -143,6 +143,17 @@ impl Storage {
         Ok(())
     }
 
+    /// Delete all messages for a channel
+    pub fn delete_channel_messages(&self, channel_id: [u8; 32]) -> Result<usize, String> {
+        let count = self.conn
+            .execute(
+                "DELETE FROM messages WHERE channel_id = ?1",
+                params![&channel_id],
+            )
+            .map_err(|e| format!("Failed to delete messages: {}", e))?;
+        Ok(count)
+    }
+
     /// List channels by type.
     pub fn list_channels_by_type(&self, channel_type: &str) -> Result<Vec<ChannelRow>, String> {
         let mut stmt = self

@@ -236,10 +236,15 @@ pub extern "C" fn get_all_friends() -> *mut c_char {
         let friends_list: Vec<serde_json::Value> = fm.get_all_friends()
             .iter()
             .map(|f| {
+                let display_name = f.custom_display_name.as_ref()
+                    .unwrap_or(&f.nickname);
                 serde_json::json!({
                     "user_id": hex::encode(f.user_id),
                     "ed25519_public": hex::encode(f.ed25519_public),
                     "nickname": f.nickname,
+                    "display_name": display_name,
+                    "notes": f.notes,
+                    "tags": f.tags,
                 })
             })
             .collect();
@@ -253,6 +258,148 @@ pub extern "C" fn get_all_friends() -> *mut c_char {
         }
     } else {
         std::ptr::null_mut()
+    }
+}
+
+/// Update friend nickname
+/// Returns 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn update_friend_nickname(user_id_hex: *const c_char, nickname: *const c_char) -> i32 {
+    let user_id_str = unsafe {
+        if user_id_hex.is_null() {
+            return -1;
+        }
+        match std::ffi::CStr::from_ptr(user_id_hex).to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+
+    let nickname_str = unsafe {
+        if nickname.is_null() {
+            return -1;
+        }
+        match std::ffi::CStr::from_ptr(nickname).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => return -1,
+        }
+    };
+
+    let user_id_bytes = match hex::decode(user_id_str) {
+        Ok(bytes) => bytes,
+        Err(_) => return -1,
+    };
+
+    if user_id_bytes.len() != 32 {
+        return -1;
+    }
+
+    let mut user_id = [0u8; 32];
+    user_id.copy_from_slice(&user_id_bytes);
+
+    let mut friends_guard = FRIENDS.lock().unwrap();
+    if let Some(ref mut fm) = *friends_guard {
+        match fm.update_nickname(&user_id, nickname_str) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    } else {
+        -1
+    }
+}
+
+/// Update friend profile (all customizable fields)
+/// Parameters: user_id_hex, nickname (null = no change), notes (null = no change), 
+///             tags_json (null = no change, JSON array of strings), custom_display_name (null = no change, empty string = clear)
+/// Returns 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn update_friend_profile(
+    user_id_hex: *const c_char,
+    nickname: *const c_char,
+    notes: *const c_char,
+    tags_json: *const c_char,
+    custom_display_name: *const c_char,
+) -> i32 {
+    let user_id_str = unsafe {
+        if user_id_hex.is_null() {
+            return -1;
+        }
+        match std::ffi::CStr::from_ptr(user_id_hex).to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+
+    let user_id_bytes = match hex::decode(user_id_str) {
+        Ok(bytes) => bytes,
+        Err(_) => return -1,
+    };
+
+    if user_id_bytes.len() != 32 {
+        return -1;
+    }
+
+    let mut user_id = [0u8; 32];
+    user_id.copy_from_slice(&user_id_bytes);
+
+    let nickname_opt = if nickname.is_null() {
+        None
+    } else {
+        unsafe {
+            match std::ffi::CStr::from_ptr(nickname).to_str() {
+                Ok(s) if !s.is_empty() => Some(s.to_string()),
+                _ => None,
+            }
+        }
+    };
+
+    let notes_opt = if notes.is_null() {
+        None
+    } else {
+        unsafe {
+            match std::ffi::CStr::from_ptr(notes).to_str() {
+                Ok(s) => Some(s.to_string()),
+                Err(_) => None,
+            }
+        }
+    };
+
+    let tags_opt = if tags_json.is_null() {
+        None
+    } else {
+        unsafe {
+            match std::ffi::CStr::from_ptr(tags_json).to_str() {
+                Ok(s) => {
+                    match serde_json::from_str::<Vec<String>>(s) {
+                        Ok(tags) => Some(tags),
+                        Err(_) => None,
+                    }
+                }
+                Err(_) => None,
+            }
+        }
+    };
+
+    let custom_display_name_opt = if custom_display_name.is_null() {
+        None
+    } else {
+        unsafe {
+            match std::ffi::CStr::from_ptr(custom_display_name).to_str() {
+                Ok(s) if s.is_empty() => Some(None), // Clear custom display name
+                Ok(s) => Some(Some(s.to_string())),
+                Err(_) => None,
+            }
+        }
+    };
+
+    let mut friends_guard = FRIENDS.lock().unwrap();
+    if let Some(ref mut fm) = *friends_guard {
+        match fm.update_profile(&user_id, nickname_opt, notes_opt, tags_opt, custom_display_name_opt) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    } else {
+        -1
     }
 }
 
@@ -530,6 +677,402 @@ fn parse_hex_vec(hex_ptr: *const c_char) -> Option<Vec<u8>> {
     };
 
     hex::decode(hex_str).ok()
+}
+
+/// Send a DM message (encrypt and store)
+/// Parameters: friend_user_id_hex, plaintext message
+/// Returns message_id (hex) on success, null on error
+#[no_mangle]
+pub extern "C" fn send_dm_message(friend_user_id_hex: *const c_char, plaintext: *const c_char) -> *mut c_char {
+    let friend_user_id = match parse_hex_32(friend_user_id_hex) {
+        Some(v) => v,
+        None => return std::ptr::null_mut(),
+    };
+
+    let plaintext_str = unsafe {
+        if plaintext.is_null() {
+            return std::ptr::null_mut();
+        }
+        match std::ffi::CStr::from_ptr(plaintext).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    // Get our identity
+    let identity_guard = IDENTITY.lock().unwrap();
+    let identity = match identity_guard.as_ref() {
+        Some(id) => id,
+        None => return std::ptr::null_mut(),
+    };
+
+    let our_user_id = identity.public().user_id;
+    let local_ed25519 = identity.public().ed25519_public.as_bytes();
+    let local_x25519_secret = identity.x25519_secret().as_bytes();
+    let local_x25519_public = identity.public().x25519_public.as_bytes();
+
+    // Check if messaging yourself - use deterministic encryption
+    let is_self = friend_user_id == our_user_id;
+    
+    let (remote_ed25519, remote_x25519_public, remote_x25519_secret, is_initiator) = 
+        if is_self {
+            // For self-messaging, we'll use deterministic encryption
+            // These values won't be used, but we need them for the type
+            let remote_ed25519 = *local_ed25519;
+            let remote_x25519_public = *local_x25519_public;
+            let remote_x25519_secret = *local_x25519_secret;
+            (remote_ed25519, remote_x25519_public, remote_x25519_secret, true)
+        } else {
+            // Get friend's public key (clone to avoid borrow issues)
+            let friend_ed25519_public = {
+                let friends_guard = FRIENDS.lock().unwrap();
+                match friends_guard.as_ref() {
+                    Some(fm) => {
+                        match fm.get_friend(&friend_user_id) {
+                            Some(f) => f.ed25519_public,
+                            None => return std::ptr::null_mut(),
+                        }
+                    }
+                    None => return std::ptr::null_mut(),
+                }
+            };
+
+            let remote_ed25519 = friend_ed25519_public; // Copy the array
+            // For now, use placeholder approach: treat Ed25519 bytes as X25519 (not secure, testing only)
+            let remote_x25519_public = friend_ed25519_public; // Placeholder
+            let remote_x25519_secret = friend_ed25519_public; // Placeholder
+            let is_initiator = our_user_id < friend_user_id;
+            
+            (remote_ed25519, remote_x25519_public, remote_x25519_secret, is_initiator)
+        };
+    
+    // Derive channel ID
+    let channel_id = if is_self {
+        dm_crypto::derive_dm_channel_id(local_ed25519, local_ed25519)
+    } else {
+        dm_crypto::derive_dm_channel_id(local_ed25519, &remote_ed25519)
+    };
+    
+    // Generate message ID (hash of channel_id + timestamp + plaintext)
+    let timestamp = now_ts();
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(&channel_id);
+    hasher.update(timestamp.to_be_bytes());
+    hasher.update(plaintext_str.as_bytes());
+    let message_id: [u8; 32] = hasher.finalize().into();
+    
+    // Encrypt message
+    let ciphertext = if is_self {
+        // Use deterministic encryption for self-messaging
+        match dm_crypto::encrypt_self_message(&channel_id, &message_id, plaintext_str.as_bytes()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to encrypt self-message: {}", e);
+                return std::ptr::null_mut();
+            }
+        }
+    } else {
+        // Use Noise Protocol for friend messaging
+        let mut session = match dm_crypto::create_test_session(
+            local_ed25519,
+            local_x25519_secret,
+            local_x25519_public,
+            &remote_ed25519,
+            &remote_x25519_secret,
+            &remote_x25519_public,
+            is_initiator,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to create session: {}", e);
+                return std::ptr::null_mut();
+            }
+        };
+        
+        match session.encrypt(plaintext_str.as_bytes()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to encrypt message: {}", e);
+                return std::ptr::null_mut();
+            }
+        }
+    };
+
+    // Store message
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(ref storage) = *storage_guard {
+        if let Err(_) = storage.store_message(message_id, channel_id, ciphertext, timestamp, 10) {
+            return std::ptr::null_mut();
+        }
+    } else {
+        return std::ptr::null_mut();
+    }
+
+    // Return message_id
+    let message_id_hex = hex::encode(message_id);
+    CString::new(message_id_hex)
+        .ok()
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Get and decrypt messages for a DM channel
+/// Parameters: friend_user_id_hex, limit, offset
+/// Returns JSON array of decrypted messages, null on error
+#[no_mangle]
+pub extern "C" fn get_dm_messages(friend_user_id_hex: *const c_char, limit: u32, offset: u32) -> *mut c_char {
+    let friend_user_id = match parse_hex_32(friend_user_id_hex) {
+        Some(v) => v,
+        None => return std::ptr::null_mut(),
+    };
+
+    // Get our identity
+    let identity_guard = IDENTITY.lock().unwrap();
+    let identity = match identity_guard.as_ref() {
+        Some(id) => id,
+        None => return std::ptr::null_mut(),
+    };
+
+    let our_user_id = identity.public().user_id;
+    let our_ed25519 = identity.public().ed25519_public.as_bytes();
+    let local_x25519_secret = identity.x25519_secret().as_bytes();
+    let local_x25519_public = identity.public().x25519_public.as_bytes();
+
+    // Check if messaging yourself and get remote keys
+    let (remote_ed25519, remote_x25519_public, remote_x25519_secret, encrypt_role, channel_id) = 
+        if friend_user_id == our_user_id {
+            // Messaging yourself - use your own keys (proper X25519 keys)
+            let channel_id = dm_crypto::derive_dm_channel_id(our_ed25519, our_ed25519);
+            let remote_ed25519 = *our_ed25519; // Copy the array
+            let remote_x25519_public = *local_x25519_public; // Our own X25519 public
+            let remote_x25519_secret = *local_x25519_secret; // Our own X25519 secret
+            (remote_ed25519, remote_x25519_public, remote_x25519_secret, true, channel_id) // Always initiator for self
+        } else {
+            // Get friend's public key (clone to avoid borrow issues)
+            let friend_ed25519_public = {
+                let friends_guard = FRIENDS.lock().unwrap();
+                match friends_guard.as_ref() {
+                    Some(fm) => {
+                        match fm.get_friend(&friend_user_id) {
+                            Some(f) => f.ed25519_public,
+                            None => return std::ptr::null_mut(),
+                        }
+                    }
+                    None => return std::ptr::null_mut(),
+                }
+            };
+
+            let channel_id = dm_crypto::derive_dm_channel_id(our_ed25519, &friend_ed25519_public);
+            let remote_ed25519 = friend_ed25519_public; // Copy the array
+            // TODO: In production, we'd store X25519 public keys for friends
+            // For now, use placeholder approach: treat Ed25519 bytes as X25519 (not secure, testing only)
+            let remote_x25519_public = friend_ed25519_public; // Placeholder - should be friend's X25519 public
+            let remote_x25519_secret = friend_ed25519_public; // Placeholder - we don't have friend's X25519 secret
+            let is_initiator = our_user_id < friend_user_id;
+            
+            (remote_ed25519, remote_x25519_public, remote_x25519_secret, is_initiator, channel_id)
+        };
+
+    // Get messages from storage
+    let storage_guard = STORAGE.lock().unwrap();
+    let messages = match storage_guard.as_ref() {
+        Some(storage) => {
+            match storage.fetch_messages(channel_id, limit, offset) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    eprintln!("Failed to fetch messages: {}", e);
+                    return std::ptr::null_mut();
+                }
+            }
+        }
+        None => {
+            eprintln!("Storage not initialized");
+            return std::ptr::null_mut();
+        }
+    };
+
+    eprintln!("Found {} messages for channel_id: {}", messages.len(), hex::encode(channel_id));
+
+    // Keys for decryption
+    let local_ed25519 = our_ed25519;
+
+    // Decrypt messages
+    let mut decrypted_messages = Vec::new();
+    let is_self = friend_user_id == our_user_id;
+    
+    for msg in messages {
+        let plaintext_result: Result<Vec<u8>, String> = if is_self {
+            // Try deterministic decryption first (new method)
+            let mut result = dm_crypto::decrypt_self_message(&channel_id, &msg.message_id, &msg.ciphertext);
+            
+            // If deterministic decryption fails, try Noise Protocol (old method for backwards compatibility)
+            if result.is_err() {
+                eprintln!("Deterministic decryption failed, trying Noise Protocol for message {}", hex::encode(msg.message_id));
+                let decrypt_role = !encrypt_role; // Try opposite role
+                
+                // Try to create session with opposite role
+                let mut session_opt = dm_crypto::create_test_session(
+                    local_ed25519,
+                    local_x25519_secret,
+                    local_x25519_public,
+                    &remote_ed25519,
+                    &remote_x25519_secret,
+                    &remote_x25519_public,
+                    decrypt_role,
+                ).ok();
+                
+                // If that failed, try same role as fallback
+                if session_opt.is_none() {
+                    session_opt = dm_crypto::create_test_session(
+                        local_ed25519,
+                        local_x25519_secret,
+                        local_x25519_public,
+                        &remote_ed25519,
+                        &remote_x25519_secret,
+                        &remote_x25519_public,
+                        encrypt_role,
+                    ).ok();
+                }
+                
+                // Try to decrypt with Noise session if we have one
+                if let Some(mut session) = session_opt {
+                    result = session.decrypt(&msg.ciphertext);
+                } else {
+                    eprintln!("Failed to create Noise session with either role for message {}", hex::encode(msg.message_id));
+                }
+            }
+            result
+        } else {
+            // Use Noise Protocol for friend messaging
+            // In Noise IK pattern:
+            // - Initiator encrypts with write_message, responder decrypts with read_message
+            // - Responder encrypts with write_message, initiator decrypts with read_message
+            // So if we encrypted as initiator, we must decrypt as responder (and vice versa)
+            let decrypt_role = !encrypt_role;
+            
+            // Try decrypting with the opposite role first (correct approach)
+            let mut session = match dm_crypto::create_test_session(
+                local_ed25519,
+                local_x25519_secret,
+                local_x25519_public,
+                &remote_ed25519,
+                &remote_x25519_secret,
+                &remote_x25519_public,
+                decrypt_role,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to create decrypt session (role {}): {}", decrypt_role, e);
+                    continue;
+                }
+            };
+            
+            match session.decrypt(&msg.ciphertext) {
+                Ok(bytes) => Ok(bytes),
+                Err(e) => {
+                    eprintln!("Failed to decrypt message {} with role {}: {}", hex::encode(msg.message_id), decrypt_role, e);
+                    // Try same role as fallback
+                    let mut fallback_session = match dm_crypto::create_test_session(
+                        local_ed25519,
+                        local_x25519_secret,
+                        local_x25519_public,
+                        &remote_ed25519,
+                        &remote_x25519_secret,
+                        &remote_x25519_public,
+                        encrypt_role,
+                    ) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            eprintln!("Could not decrypt message {} with either role", hex::encode(msg.message_id));
+                            continue;
+                        }
+                    };
+                    fallback_session.decrypt(&msg.ciphertext)
+                }
+            }
+        };
+        
+        match plaintext_result {
+            Ok(plaintext_bytes) => {
+                match String::from_utf8(plaintext_bytes) {
+                    Ok(plaintext) => {
+                        decrypted_messages.push(serde_json::json!({
+                            "message_id": hex::encode(msg.message_id),
+                            "plaintext": plaintext,
+                            "timestamp": msg.timestamp,
+                            "is_sent": is_self || encrypt_role, // Self-messages are always sent by us
+                        }));
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to decode plaintext as UTF-8: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to decrypt message {}: {}", hex::encode(msg.message_id), e);
+            }
+        }
+    }
+
+    match serde_json::to_string(&decrypted_messages) {
+        Ok(s) => CString::new(s)
+            .ok()
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Clear all messages for a DM channel
+/// Parameters: friend_user_id_hex
+/// Returns 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn clear_dm_messages(friend_user_id_hex: *const c_char) -> i32 {
+    let friend_user_id = match parse_hex_32(friend_user_id_hex) {
+        Some(v) => v,
+        None => return -1,
+    };
+
+    // Get our identity
+    let identity_guard = IDENTITY.lock().unwrap();
+    let identity = match identity_guard.as_ref() {
+        Some(id) => id,
+        None => return -1,
+    };
+
+    let our_ed25519 = identity.public().ed25519_public.as_bytes();
+    
+    // Derive channel ID
+    let channel_id = if friend_user_id == identity.public().user_id {
+        // Self-messaging
+        dm_crypto::derive_dm_channel_id(our_ed25519, our_ed25519)
+    } else {
+        // Get friend's public key
+        let friends_guard = FRIENDS.lock().unwrap();
+        let friend_ed25519_public = match friends_guard.as_ref() {
+            Some(fm) => {
+                match fm.get_friend(&friend_user_id) {
+                    Some(f) => f.ed25519_public,
+                    None => return -1,
+                }
+            }
+            None => return -1,
+        };
+        dm_crypto::derive_dm_channel_id(our_ed25519, &friend_ed25519_public)
+    };
+
+    // Delete messages
+    let storage_guard = STORAGE.lock().unwrap();
+    match storage_guard.as_ref() {
+        Some(storage) => {
+            match storage.delete_channel_messages(channel_id) {
+                Ok(_) => 0,
+                Err(_) => -1,
+            }
+        }
+        None => -1,
+    }
 }
 
 /// Helper: current timestamp seconds since UNIX_EPOCH

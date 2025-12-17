@@ -2,6 +2,10 @@
 name = "meshapp-core"
 version = "0.1.0"
 edition = "2021"
+authors = ["meshapp contributors"]
+description = "Core library for offline-first encrypted mesh messenger"
+license = "MIT"
+repository = "https://github.com/W4ashabii/meshapp"
 
 [lib]
 name = "meshapp_core"
@@ -19,4 +23,5 @@ dirs = "5.0"
 once_cell = "1.19"
 snow = "0.10"
 rusqlite = { version = "0.29", features = ["bundled"] }
+chacha20poly1305 = "0.10"
 

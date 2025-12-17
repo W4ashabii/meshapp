@@ -7,6 +7,7 @@
 use sha2::{Sha256, Digest};
 use snow::Builder;
 use std::cmp::Ordering;
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
 
 /// Derive DM channel ID from two Ed25519 public keys
 /// 
@@ -275,5 +276,48 @@ pub fn create_test_session(
 /// Get DM channel ID as hex string
 pub fn dm_channel_id_to_hex(channel_id: &[u8; 32]) -> String {
     hex::encode(channel_id)
+}
+
+/// Deterministic encryption for self-messaging
+/// Uses ChaCha20Poly1305 with a key derived from channel_id and a nonce from message_id
+pub fn encrypt_self_message(channel_id: &[u8; 32], message_id: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    // Derive encryption key from channel_id
+    let mut hasher = Sha256::new();
+    hasher.update(b"self_msg_key");
+    hasher.update(channel_id);
+    let key_bytes: [u8; 32] = hasher.finalize().into();
+    let key = chacha20poly1305::Key::from_slice(&key_bytes);
+    
+    // Use message_id as nonce (first 12 bytes)
+    // If message_id is less than 12 bytes, pad with zeros
+    let mut nonce_bytes = [0u8; 12];
+    let copy_len = std::cmp::min(12, message_id.len());
+    nonce_bytes[0..copy_len].copy_from_slice(&message_id[0..copy_len]);
+    let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
+    
+    let cipher = ChaCha20Poly1305::new(key);
+    cipher.encrypt(nonce, plaintext)
+        .map_err(|e| format!("Encryption failed: {}", e))
+}
+
+/// Deterministic decryption for self-messaging
+pub fn decrypt_self_message(channel_id: &[u8; 32], message_id: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    // Derive encryption key from channel_id (same as encryption)
+    let mut hasher = Sha256::new();
+    hasher.update(b"self_msg_key");
+    hasher.update(channel_id);
+    let key_bytes: [u8; 32] = hasher.finalize().into();
+    let key = chacha20poly1305::Key::from_slice(&key_bytes);
+    
+    // Use message_id as nonce (first 12 bytes)
+    // If message_id is less than 12 bytes, pad with zeros
+    let mut nonce_bytes = [0u8; 12];
+    let copy_len = std::cmp::min(12, message_id.len());
+    nonce_bytes[0..copy_len].copy_from_slice(&message_id[0..copy_len]);
+    let nonce = chacha20poly1305::Nonce::from_slice(&nonce_bytes);
+    
+    let cipher = ChaCha20Poly1305::new(key);
+    cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))
 }
 

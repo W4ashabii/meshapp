@@ -64,6 +64,12 @@ meshapp/
 - Battery mode configuration (performance/balanced/power-saving)
 - Recommended settings based on battery mode
 
+**Phase 10: Release** ✅
+- Release build scripts for all platforms
+- GitHub Actions workflow for automated builds
+- CHANGELOG for version tracking
+- Packaging configurations ready
+
 ## Building
 
 ### Prerequisites
@@ -92,6 +98,52 @@ This will compile the Rust library and copy it to the Flutter directory.
 cd flutter
 flutter pub get
 flutter run
+```
+
+### Release Build (All Platforms)
+
+Use the release build script:
+
+```bash
+./build-release.sh
+```
+
+This will:
+1. Build the Rust library in release mode
+2. Copy the library to the Flutter directory
+3. Build the Flutter app for your current platform
+4. Output the release bundle in `flutter/build/`
+
+### Platform-Specific Builds
+
+**Linux:**
+```bash
+cd flutter && flutter build linux --release
+# Output: build/linux/x64/release/bundle/
+```
+
+**macOS:**
+```bash
+cd flutter && flutter build macos --release
+# Output: build/macos/Build/Products/Release/
+```
+
+**Windows:**
+```bash
+cd flutter && flutter build windows --release
+# Output: build/windows/x64/runner/Release/
+```
+
+**Android:**
+```bash
+cd flutter && flutter build apk --release
+# Output: build/app/outputs/flutter-apk/app-release.apk
+```
+
+**iOS:**
+```bash
+cd flutter && flutter build ios --release
+# Output: build/ios/iphoneos/Runner.app
 ```
 
 ## FFI Test
@@ -165,6 +217,29 @@ Direct messages use:
 - **Session Management**: Transport state maintained after handshake completion
 
 **Note**: In Phase 3, handshake is simulated for testing. In Phase 5+, handshake will occur over the network transport layer.
+
+## Release Information
+
+### Version
+Current version: **0.1.0** (see `VERSION` file)
+
+### Build Artifacts
+After running `./build-release.sh`, release bundles are available in:
+- **Linux**: `flutter/build/linux/x64/release/bundle/`
+- **macOS**: `flutter/build/macos/Build/Products/Release/`
+- **Windows**: `flutter/build/windows/x64/runner/Release/`
+- **Android**: `flutter/build/app/outputs/flutter-apk/app-release.apk`
+- **iOS**: `flutter/build/ios/iphoneos/Runner.app`
+
+### Automated Releases
+GitHub Actions workflow (`.github/workflows/release.yml`) automatically builds and packages releases when tags are pushed:
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+### Changelog
+See [CHANGELOG.md](CHANGELOG.md) for version history and changes.
 
 ## License
 

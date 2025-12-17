@@ -18,6 +18,12 @@ pub struct Friend {
     pub user_id: [u8; 32],
     pub ed25519_public: [u8; 32],
     pub nickname: String,
+    #[serde(default)]
+    pub notes: String, // User's custom notes about this friend
+    #[serde(default)]
+    pub tags: Vec<String>, // User-defined tags for organization
+    #[serde(default)]
+    pub custom_display_name: Option<String>, // Optional custom display name (overrides nickname)
 }
 
 /// Friend storage (in-memory representation)
@@ -82,6 +88,23 @@ impl FriendsStorage {
         Ok(())
     }
 
+    /// Check if nickname is already taken (by a different friend)
+    fn is_nickname_taken(&self, nickname: &str, exclude_user_id: Option<&[u8; 32]>) -> bool {
+        for (user_id_hex, friend) in &self.friends {
+            // Skip the friend we're updating (if provided)
+            if let Some(exclude_id) = exclude_user_id {
+                if hex::encode(exclude_id) == *user_id_hex {
+                    continue;
+                }
+            }
+            
+            if friend.nickname.eq_ignore_ascii_case(nickname) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Add a friend
     fn add_friend(&mut self, friend: Friend) -> Result<(), String> {
         let user_id_hex = hex::encode(friend.user_id);
@@ -93,6 +116,11 @@ impl FriendsStorage {
         
         if computed_user_id != friend.user_id {
             return Err("user_id does not match Ed25519 public key".to_string());
+        }
+
+        // Check nickname uniqueness
+        if self.is_nickname_taken(&friend.nickname, None) {
+            return Err(format!("Nickname '{}' is already taken", friend.nickname));
         }
 
         self.friends.insert(user_id_hex, friend);
@@ -118,11 +146,52 @@ impl FriendsStorage {
     }
 
     /// Update friend nickname
-    #[allow(dead_code)] // Will be used in future phases
     fn update_nickname(&mut self, user_id: &[u8; 32], nickname: String) -> Result<(), String> {
+        // Check nickname uniqueness (excluding current friend)
+        if self.is_nickname_taken(&nickname, Some(user_id)) {
+            return Err(format!("Nickname '{}' is already taken", nickname));
+        }
+        
         let user_id_hex = hex::encode(user_id);
         if let Some(friend) = self.friends.get_mut(&user_id_hex) {
             friend.nickname = nickname;
+            Ok(())
+        } else {
+            Err("Friend not found".to_string())
+        }
+    }
+
+    /// Update friend profile (nickname, notes, tags, custom_display_name)
+    fn update_profile(
+        &mut self,
+        user_id: &[u8; 32],
+        nickname: Option<String>,
+        notes: Option<String>,
+        tags: Option<Vec<String>>,
+        custom_display_name: Option<Option<String>>,
+    ) -> Result<(), String> {
+        let user_id_hex = hex::encode(user_id);
+        
+        // Check nickname uniqueness before getting mutable reference
+        if let Some(ref n) = nickname {
+            if self.is_nickname_taken(n, Some(user_id)) {
+                return Err(format!("Nickname '{}' is already taken", n));
+            }
+        }
+        
+        if let Some(friend) = self.friends.get_mut(&user_id_hex) {
+            if let Some(n) = nickname {
+                friend.nickname = n;
+            }
+            if let Some(n) = notes {
+                friend.notes = n;
+            }
+            if let Some(t) = tags {
+                friend.tags = t;
+            }
+            if let Some(cdn) = custom_display_name {
+                friend.custom_display_name = cdn;
+            }
             Ok(())
         } else {
             Err("Friend not found".to_string())
@@ -167,6 +236,9 @@ impl FriendManager {
             user_id,
             ed25519_public,
             nickname,
+            notes: String::new(),
+            tags: Vec::new(),
+            custom_display_name: None,
         };
 
         self.storage.add_friend(friend)?;
@@ -196,11 +268,33 @@ impl FriendManager {
     }
 
     /// Update friend nickname
-    #[allow(dead_code)] // Will be used in future phases
     pub fn update_nickname(&mut self, user_id: &[u8; 32], nickname: String) -> Result<(), String> {
         self.storage.update_nickname(user_id, nickname)?;
         self.storage.save(&self.storage_path)?;
         Ok(())
+    }
+
+    /// Update friend profile (all customizable fields)
+    pub fn update_profile(
+        &mut self,
+        user_id: &[u8; 32],
+        nickname: Option<String>,
+        notes: Option<String>,
+        tags: Option<Vec<String>>,
+        custom_display_name: Option<Option<String>>,
+    ) -> Result<(), String> {
+        self.storage.update_profile(user_id, nickname, notes, tags, custom_display_name)?;
+        self.storage.save(&self.storage_path)?;
+        Ok(())
+    }
+
+    /// Get display name for a friend (custom_display_name or nickname)
+    #[allow(dead_code)] // Utility function for future FFI use
+    pub fn get_display_name(&self, user_id: &[u8; 32]) -> Option<String> {
+        self.storage.get_friend(user_id).map(|f| {
+            f.custom_display_name.clone()
+                .unwrap_or_else(|| f.nickname.clone())
+        })
     }
 }
 

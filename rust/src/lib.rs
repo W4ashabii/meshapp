@@ -15,6 +15,7 @@ mod storage;
 mod transport;
 mod geo;
 mod mentions;
+mod optimization;
 
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -1016,6 +1017,57 @@ pub extern "C" fn drain_loopback_packets() -> *mut c_char {
         }
     } else {
         std::ptr::null_mut()
+    }
+}
+
+// ========== Optimization (Phase 9) ==========
+
+/// Get recommended optimization config as JSON
+/// 
+/// Returns JSON: {
+///   "battery_mode": "Performance" | "Balanced" | "PowerSaving",
+///   "scan_interval_ms": <number>,
+///   "scan_window_ms": <number>,
+///   "batch_size": <number>,
+///   "batch_age_secs": <number>
+/// }
+#[no_mangle]
+pub extern "C" fn get_optimization_config(battery_mode_str: *const c_char) -> *mut c_char {
+    let mode_str = unsafe {
+        if battery_mode_str.is_null() {
+            return std::ptr::null_mut();
+        }
+        match std::ffi::CStr::from_ptr(battery_mode_str).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+
+    let battery_mode = match mode_str.to_lowercase().as_str() {
+        "performance" => optimization::BatteryMode::Performance,
+        "balanced" => optimization::BatteryMode::Balanced,
+        "powersaving" | "power_saving" => optimization::BatteryMode::PowerSaving,
+        _ => optimization::BatteryMode::Balanced,
+    };
+
+    let config = optimization::OptimizationConfig::from_battery_mode(battery_mode);
+    let mode_name = match battery_mode {
+        optimization::BatteryMode::Performance => "Performance",
+        optimization::BatteryMode::Balanced => "Balanced",
+        optimization::BatteryMode::PowerSaving => "PowerSaving",
+    };
+
+    let json = serde_json::json!({
+        "battery_mode": mode_name,
+        "scan_interval_ms": config.scan_interval.as_millis(),
+        "scan_window_ms": config.scan_interval.scan_window_ms(),
+        "batch_size": config.batch_size,
+        "batch_age_secs": config.batch_age_secs,
+    });
+
+    match serde_json::to_string(&json) {
+        Ok(s) => CString::new(s).ok().map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut()),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 

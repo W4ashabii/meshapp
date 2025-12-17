@@ -58,6 +58,12 @@ meshapp/
 - Rust mention extractor matched against local friends list
 - FFI to return mentions as JSON for local notifications/UI
 
+**Phase 9: Optimization** ✅
+- Packet batching for efficient transport usage
+- BLE scanning interval optimization (aggressive/normal/power-saving)
+- Battery mode configuration (performance/balanced/power-saving)
+- Recommended settings based on battery mode
+
 ## Building
 
 ### Prerequisites
